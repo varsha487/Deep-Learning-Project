@@ -6,113 +6,113 @@ import matplotlib.pyplot as plt
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ==========================
-# 配置：latent 的形状
+# Configuration: latent shape
 # ==========================
-T = 16   # 时间长度（假装 16 帧）
-D = 16   # 每帧 feature 维度
-LATENT_DIM = T * D   # 展平后的维度
+T = 16   # time length (simulate 16 frames)
+D = 16   # feature dimension per frame
+LATENT_DIM = T * D   # flattened dimension
 
 
 # ==========================
-# 1. 造“假钢琴 latent”
+# 1. Create "fake piano latent"
 # ==========================
 
 def make_fake_piano_latent(batch_size):
     """
-    返回形状 [B, T, D] 的假钢琴 latent
-    设计：时间上平滑 + 少量噪声
+    Return fake piano latent of shape [B, T, D].
+    Design: smooth evolution over time + small noise.
     """
-    # 基础噪声 [B, T, D]
+    # base noise [B, T, D]
     base = torch.randn(batch_size, T, D)
 
-    # 对时间做平滑（模拟音高/能量随时间平滑变化）
-    # 简单方法：平均邻居
+    # smooth over time (simulate pitch/energy smoothness)
+    # simple method: average with previous frame
     smooth = base.clone()
     for t in range(1, T):
         smooth[:, t] = 0.7 * smooth[:, t - 1] + 0.3 * base[:, t]
 
-    # 再整体缩放一下，防止数值太大
+    # global scaling to avoid large numbers
     piano = 0.8 * smooth
 
     return piano.to(device)
 
 
 # ==========================
-# 2. 从钢琴 latent 生成“假小提琴 latent”
+# 2. Generate "fake violin latent" from piano latent
 # ==========================
 
-# 这里定义一个固定的线性变换 + 偏置，模拟 timbre shift
-# 注意：这里只是 toy；真实任务中取决于 encoder 输出分布
-W = nn.Parameter(torch.eye(LATENT_DIM), requires_grad=False)  # 先用单位阵
+# Here we define a fixed linear transform + bias to simulate timbre shift.
+# This is only a toy example; in real tasks it depends on encoder output statistics.
+W = nn.Parameter(torch.eye(LATENT_DIM), requires_grad=False)  # use identity initially
 b = nn.Parameter(torch.zeros(LATENT_DIM), requires_grad=False)
 
-# 为了更有趣，我们给小提琴加一点固定的偏移（比如往高频方向 shift）
+# For more realism, add a fixed shift vector representing timbre change.
 with torch.no_grad():
-    # 随机生成一个 timbre 方向的向量
+    # randomly generate a "timbre direction" vector
     timbre_shift = torch.randn(LATENT_DIM)
-    timbre_shift = timbre_shift / timbre_shift.norm() * 0.5  # 控制幅度
+    timbre_shift = timbre_shift / timbre_shift.norm() * 0.5  # control amplitude
     b.copy_(timbre_shift)
 
 
 def fake_violin_from_piano(z_piano):
     """
     z_piano: [B, T, D]
-    返回 z_violin: [B, T, D]
-    逻辑：
-      1. 展平做线性变换 z' = W z + b
-      2. 加 vibrato（时间方向高频抖动）到部分维度
-      3. 加一点小噪声
+    Return z_violin: [B, T, D]
+
+    Logic:
+      1. Flatten and apply linear transform: z' = W z + b
+      2. Add vibrato (temporal high-frequency modulation) on part of the dims
+      3. Add a bit of noise to expand the distribution
     """
     B = z_piano.shape[0]
 
-    # 展平：[B, T*D]
+    # flatten: [B, T*D]
     z_flat = z_piano.reshape(B, LATENT_DIM)
 
-    # 线性 + 偏置（timbre shift）
+    # linear transform + bias (timbre shift)
     z_lin = z_flat @ W.T + b   # [B, LATENT_DIM]
 
-    # 把它还原到 [B, T, D] 以便加时间抖动
+    # reshape back to [B, T, D] to add temporal perturbation
     z = z_lin.reshape(B, T, D)
 
-    # 加 vibrato：对部分维度加一个随时间变化的正弦扰动
-    # 比如对前 4 个 feature 维度加
+    # Add vibrato to first 4 feature dims
     t_idx = torch.arange(T, device=z.device).float().view(1, T, 1)  # [1, T, 1]
-    vibrato = 0.3 * torch.sin(2.0 * 3.14159 * t_idx / 4.0)  # 周期较短，模拟“抖”
+    vibrato = 0.3 * torch.sin(2.0 * 3.14159 * t_idx / 4.0)  # shorter period → vibrato effect
     z[:, :, :4] = z[:, :, :4] + vibrato
 
-    # 再加一点小噪声，让分布更“散”一点
+    # Add small noise to make distribution more spread
     z = z + 0.05 * torch.randn_like(z)
 
     return z
 
 
 # ==========================
-# 3. 采样训练 batch：x0, x1, x_t, t, v_true
+# 3. Sample training batch: x0, x1, x_t, t, v_true
 # ==========================
 
 def sample_batch_latent(batch_size):
     """
-    x0: 假钢琴 latent [B, T, D]
-    x1: 假小提琴 latent [B, T, D]
-    x_t: 直线路径上的中间点
-    t:   时间 [B, 1]
-    v_true: 真实速度 = x1 - x0
+    x0: fake piano latent [B, T, D]
+    x1: fake violin latent [B, T, D]
+    x_t: intermediate point on straight path
+    t:   time [B, 1]
+    v_true: true velocity = x1 - x0
     """
     #   x0 = encoder(audio_piano)   #
-    x0 = make_fake_piano_latent(batch_size)   # [B, T, D]
+    x0 = make_fake_piano_latent(batch_size)
     #   x1 = encoder(audio_violin)  #
-    x1 = fake_violin_from_piano(x0)          # [B, T, D]
+    x1 = fake_violin_from_piano(x0)
 
-    # 时间 t
-    t = torch.rand(batch_size, 1, device=device)  # [B, 1]
+    # sample time t
+    t = torch.rand(batch_size, 1, device=device)
 
-    # 需要 broadcast 到 [B, T, D] 才能做插值
-    t_b = t.view(batch_size, 1, 1)  # [B, 1, 1]
+    # reshape for broadcasting to [B, T, D]
+    t_b = t.view(batch_size, 1, 1)
 
-    x_t = (1.0 - t_b) * x0 + t_b * x1  # 直线路径上的点
-    v_true = x1 - x0                   # 常数速度
+    x_t = (1.0 - t_b) * x0 + t_b * x1  # interpolation on straight line
+    v_true = x1 - x0                   # constant velocity
 
-    # 展平成 [B, LATENT_DIM] 供 MLP 使用
+    # flatten for MLP
     x_t_flat = x_t.reshape(batch_size, LATENT_DIM)
     v_true_flat = v_true.reshape(batch_size, LATENT_DIM)
     x0_flat = x0.reshape(batch_size, LATENT_DIM)
@@ -122,14 +122,14 @@ def sample_batch_latent(batch_size):
 
 
 # ==========================
-# 4. 高维 Rectified Flow 模型：v_theta(x, t)
+# 4. High-dimensional Rectified Flow model: v_theta(x, t)
 # ==========================
 
 class RFHighDim(nn.Module):
     def __init__(self, latent_dim, hidden_dim=256):
         super().__init__()
-        # 输入：x_flat [B, latent_dim], t [B,1]
-        # 拼接后是 latent_dim+1 维
+        # Input: x_flat [B, latent_dim], t [B,1]
+        # After concatenation → dim = latent_dim + 1
         self.net = nn.Sequential(
             nn.Linear(latent_dim + 1, hidden_dim),
             nn.ReLU(),
@@ -141,7 +141,7 @@ class RFHighDim(nn.Module):
     def forward(self, x_flat, t):
         """
         x_flat: [B, LATENT_DIM]
-        t:      [B, 1] 或 [B]
+        t:      [B, 1] or [B]
         """
         if t.dim() == 1:
             t = t.unsqueeze(-1)
@@ -150,7 +150,7 @@ class RFHighDim(nn.Module):
 
 
 # ==========================
-# 5. 训练循环
+# 5. Training loop
 # ==========================
 
 def train_rf_highdim(
@@ -179,27 +179,28 @@ def train_rf_highdim(
 
 
 # ==========================
-# 6. 用 ODE (Euler) 从钢琴 latent 流到小提琴 latent
+# 6. ODE (Euler) flow: piano latent → violin latent
 # ==========================
 
 @torch.no_grad()
 def flow_from_piano_latent(model, n_points=200, n_steps=50):
     """
-    从假钢琴 latent 采样，然后用 RF 把它们流向假小提琴 latent 区域
-    返回：
-      x0_flat: 起点钢琴 latent [B, LATENT_DIM]
-      xT_flat: 终点 RF 输出 [B, LATENT_DIM]
-      x1_flat: 真实小提琴 latent（用 fake_violin_from_piano 算）[B, LATENT_DIM]
-    """
-    x0 = make_fake_piano_latent(n_points)        # [B, T, D]
-    x1 = fake_violin_from_piano(x0)              # [B, T, D]
+    Sample fake piano latents, then use RF to flow them toward violin latent region.
 
-    x = x0.reshape(n_points, LATENT_DIM)         # 展平
-    t = torch.zeros(n_points, 1, device=device)  # 初始时间 0
+    Returns:
+      x0_flat: initial piano latent [B, LATENT_DIM]
+      xT_flat: final RF result [B, LATENT_DIM]
+      x1_flat: ground-truth violin latent [B, LATENT_DIM]
+    """
+    x0 = make_fake_piano_latent(n_points)
+    x1 = fake_violin_from_piano(x0)
+
+    x = x0.reshape(n_points, LATENT_DIM)
+    t = torch.zeros(n_points, 1, device=device)
     dt = 1.0 / n_steps
 
     for _ in range(n_steps):
-        v = model(x, t)          # [B, LATENT_DIM]
+        v = model(x, t)
         x = x + v * dt
         t = t + dt
 
@@ -211,7 +212,7 @@ def flow_from_piano_latent(model, n_points=200, n_steps=50):
 
 
 # ==========================
-# 7. 用 PCA 把高维投影到 2D 来看分布
+# 7. PCA projection to 2D for visualization
 # ==========================
 from sklearn.decomposition import PCA
 
@@ -219,7 +220,7 @@ def visualize_highdim(model):
     model.eval()
     x0_flat, xT_flat, x1_flat = flow_from_piano_latent(model)
 
-    # 拼在一起做 PCA
+    # concatenate all points for PCA
     all_points = torch.cat([x0_flat, xT_flat, x1_flat], dim=0).numpy()
     pca = PCA(n_components=2)
     proj = pca.fit_transform(all_points)
@@ -242,7 +243,7 @@ def visualize_highdim(model):
 
 
 # ==========================
-# 8. 主入口
+# 8. Entry point
 # ==========================
 
 if __name__ == "__main__":

@@ -6,12 +6,12 @@ import matplotlib.pyplot as plt
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ==========================
-# 1. 造数据：两个 2D 高斯分布
+# 1. Create data: two 2D Gaussian distributions
 # ==========================
 
 def sample_piano(batch_size):
     """
-    模拟 '钢琴 latent'：左下角附近的 2D 高斯
+    Simulate 'piano latent': a 2D Gaussian near the lower-left corner.
     """
     mean = torch.tensor([-2.0, -2.0])
     cov_scale = 0.5
@@ -19,7 +19,7 @@ def sample_piano(batch_size):
 
 def sample_violin(batch_size):
     """
-    模拟 '小提琴 latent'：右上角附近的 2D 高斯
+    Simulate 'violin latent': a 2D Gaussian near the upper-right corner.
     """
     mean = torch.tensor([2.0, 2.0])
     cov_scale = 0.5
@@ -27,46 +27,46 @@ def sample_violin(batch_size):
 
 def sample_batch(batch_size):
     """
-    返回训练 RF 需要的东西：
-    x_t: 中间点
-    t:   时间 (0~1)
-    v_true: 真正的速度 (x1 - x0)
-    x0, x1: 起点和终点（方便后面可视化）
+    Returns everything needed to train a Rectified Flow model:
+    x_t: interpolated midpoint
+    t:   time (0~1)
+    v_true: true velocity vector (x1 - x0)
+    x0, x1: starting and ending points (used later for visualization)
     """
     x0 = sample_piano(batch_size).to(device)
     x1 = sample_violin(batch_size).to(device)
 
-    # 采样时间 t，形状 [B, 1]
+    # sample time t of shape [B, 1]
     t = torch.rand(batch_size, 1, device=device)
 
-    # 直线路径插值
+    # linear interpolation along the straight path
     x_t = (1.0 - t) * x0 + t * x1
 
-    # 直线路径上的真实速度是常数
+    # true velocity on a straight path is constant
     v_true = x1 - x0
 
     return x_t, t, v_true, x0, x1
 
 # ==========================
-# 2. 定义 Rectified Flow 模型：v_theta(x, t) -> R^2
+# 2. Define Rectified Flow model: v_theta(x, t) -> R^2
 # ==========================
 
 class RF2D(nn.Module):
     def __init__(self, hidden_dim=64):
         super().__init__()
-        # 输入是 [x(2D), t(1D)] -> 共 3 维
+        # Input is [x (2D), t (1D)] → total 3 dimensions
         self.net = nn.Sequential(
             nn.Linear(3, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 2),  # 输出 2 维速度
+            nn.Linear(hidden_dim, 2),  # output is 2D velocity
         )
 
     def forward(self, x, t):
         """
         x: [B, 2]
-        t: [B, 1] 或 [B]
+        t: [B, 1] or [B]
         """
         if t.dim() == 1:
             t = t.unsqueeze(-1)
@@ -74,7 +74,7 @@ class RF2D(nn.Module):
         return self.net(inp)
 
 # ==========================
-# 3. 训练循环
+# 3. Training loop
 # ==========================
 
 def train_rf2d(
@@ -91,7 +91,7 @@ def train_rf2d(
 
         v_pred = model(x_t, t)
 
-        # RF 的 L2 loss：拟合 (x1 - x0)
+        # RF L2 loss: fit (x1 - x0)
         loss = ((v_pred - v_true) ** 2).mean()
 
         opt.zero_grad()
@@ -104,37 +104,38 @@ def train_rf2d(
     return model
 
 # ==========================
-# 4. 用 ODE (Euler) 从钢琴点 '流' 到小提琴点
+# 4. Use ODE (Euler) to flow from the piano distribution to the violin distribution
 # ==========================
 
 @torch.no_grad()
 def flow_from_piano(model, n_points=512, n_steps=50):
     """
-    从钢琴分布采样点，然后用 Euler 积分把点推到 t=1
+    Sample points from the piano distribution, then use Euler integration
+    to flow them forward until t = 1.
     """
-    x = sample_piano(n_points).to(device)  # 起点 x0
-    t = torch.zeros(n_points, 1, device=device)  # 初始时间 t=0
+    x = sample_piano(n_points).to(device)  # starting point x0
+    t = torch.zeros(n_points, 1, device=device)  # initial time t = 0
     dt = 1.0 / n_steps
 
     for _ in range(n_steps):
-        v = model(x, t)          # 预测速度
-        x = x + v * dt           # Euler 前进一步
-        t = t + dt               # 时间增加
+        v = model(x, t)     # predicted velocity
+        x = x + v * dt      # Euler forward step
+        t = t + dt          # increment time
 
-    return x.cpu()  # 终点（模型预测的小提琴分布）
+    return x.cpu()  # final predicted violin distribution
 
 # ==========================
-# 5. 画图看效果
+# 5. Visualization
 # ==========================
 
 def visualize(model):
     model.eval()
 
-    # 采一些真实钢琴 & 小提琴点
+    # sample real piano & violin points
     piano = sample_piano(500).cpu()
     violin = sample_violin(500).cpu()
 
-    # 用 RF 把钢琴流过去
+    # flow piano → violin through RF
     flowed = flow_from_piano(model, n_points=500, n_steps=50)
 
     plt.figure(figsize=(6, 6))
@@ -150,7 +151,7 @@ def visualize(model):
     plt.show()
 
 # ==========================
-# 6. 主函数
+# 6. Main function
 # ==========================
 
 if __name__ == "__main__":
