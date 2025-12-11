@@ -8,7 +8,7 @@ You can train the two models provided in the project by running:
 
 - music_transfer_violintotrumpet.py
   OR
-- Data_Processing.ipynb
+- Data_Processing_Updated_11-15-Copy1.ipynb
 
 Users should supply their own aligned audio files.
 
